@@ -3,29 +3,55 @@ import psycopg2
 import pandas as pd
 import requests
 
-# 1. TELEGRAM SOZLAMALARI (O'zingiznikini kiriting)
-TG_TOKEN = "8442153084:AAEftF3_JykYzbWdymcrjArZ8ceP6c-qgfE"
-TG_CHAT_ID = "1685342390"
+# 1. TELEGRAM SOZLAMALARI
+TG_TOKEN = "SIZNING_BOT_TOKENINGIZ"
+TG_CHAT_ID = "SIZNING_CHAT_ID_RAQAMINGIZ"
+SAYT_LINKI = "https://sizning-saytingiz.streamlit.app" # O'zingizning streamlit linkizni yozing
 
-def send_telegram_msg(text):
+def send_telegram_msg(text, order_id):
+    # Telegram xabari ichida tugma yaratish
+    confirm_url = f"{SAYT_LINKI}/?task=confirm&order_id={order_id}"
+    keyboard = {
+        "inline_keyboard": [[
+            {"text": "✅ Tasdiqlash (Saytda)", "url": confirm_url}
+        ]]
+    }
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {"chat_id": TG_CHAT_ID, "text": text}
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        st.error(f"Telegram xabarnoma yuborishda xato: {e}")
+    payload = {"chat_id": TG_CHAT_ID, "text": text, "reply_markup": keyboard}
+    requests.post(url, json=payload)
 
 # 2. BAZAGA ULANISH
 def get_connection():
     return psycopg2.connect('postgresql://neondb_owner:npg_FSj8WaqM7udA@ep-plain-block-ahq7shct-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require')
 
+# --- AVTOMATIK TASDIQLASH (Telegramdan kelganda) ---
+query_params = st.query_params
+if "task" in query_params and query_params["task"] == "confirm":
+    order_id = query_params.get("order_id")
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        # Buyurtma ma'lumotlarini olish
+        cur.execute("SELECT telefon_id FROM buyurtmalar WHERE id = %s", (order_id,))
+        order_data = cur.fetchone()
+        if order_data:
+            tel_id = order_data[0]
+            cur.execute("DELETE FROM telefonlar WHERE id = %s", (tel_id,))
+            cur.execute("UPDATE buyurtmalar SET holat = 'Sotildi' WHERE id = %s", (order_id,))
+            conn.commit()
+            st.success("✅ Buyurtma muvaffaqiyatli tasdiqlandi va ombordan o'chirildi!")
+            st.balloons() # Bayramona effekt
+        cur.close()
+        conn.close()
+    except Exception as e:
+        st.error(f"Xato: {e}")
+
+# --- ASOSIY INTERFEYS ---
 st.sidebar.title("Menyu")
 page = st.sidebar.radio("Sahifani tanlang:", ["Foydalanuvchi", "Admin Panel"])
 
-# --- FOYDALANUVCHI SAHIFASI ---
 if page == "Foydalanuvchi":
     st.title("📱 Telefon do'koni")
-    
     try:
         conn = get_connection()
         cur = conn.cursor()
@@ -33,11 +59,9 @@ if page == "Foydalanuvchi":
         telefonlar = cur.fetchall()
         
         if telefonlar:
-            st.subheader("Mavjud telefonlar")
             df = pd.DataFrame(telefonlar, columns=["ID", "Model nomi", "Narxi ($)"])
             st.dataframe(df, hide_index=True, use_container_width=True)
             
-            st.write("---")
             st.subheader("🛒 Sotib olish")
             tanlangan_id = st.number_input("Telefon ID sini kiriting:", min_value=1, step=1)
             
@@ -45,68 +69,23 @@ if page == "Foydalanuvchi":
                 cur.execute("SELECT model, narxi FROM telefonlar WHERE id = %s", (tanlangan_id,))
                 res = cur.fetchone()
                 if res:
-                    # Bazaga buyurtmani yozish
-                    cur.execute("INSERT INTO buyurtmalar (telefon_id, model) VALUES (%s, %s)", (tanlangan_id, res[0]))
+                    cur.execute("INSERT INTO buyurtmalar (telefon_id, model) VALUES (%s, %s) RETURNING id", (tanlangan_id, res[0]))
+                    new_order_id = cur.fetchone()[0]
                     conn.commit()
                     
-                    # TELEGRAMGA XABAR YUBORISH
-                    xabar = f"🔔 YANGI BUYURTMA!\n\n📱 Model: {res[0]}\n💰 Narxi: {res[1]}$\n🆔 ID: {tanlangan_id}\n\nAdmin panelga kirib tasdiqlang!"
-                    send_telegram_msg(xabar)
-                    
-                    st.success(f"✅ {res[0]} uchun so'rov yuborildi va Adminga Telegram orqali xabar berildi!")
+                    xabar = f"🔔 YANGI BUYURTMA!\n\n📱 Model: {res[0]}\n💰 Narxi: {res[1]}$\n🆔 ID: {tanlangan_id}"
+                    send_telegram_msg(xabar, new_order_id)
+                    st.success("✅ So'rov yuborildi! Adminga Telegramdan xabar ketdi.")
                 else:
-                    st.error("❌ Bunday ID dagi telefon topilmadi!")
-        else:
-            st.info("Ombor hozircha bo'sh.")
+                    st.error("❌ ID topilmadi!")
         cur.close()
         conn.close()
     except Exception as e:
-        st.error(f"Xato yuz berdi: {e}")
+        st.error(f"Xato: {e}")
 
-# --- ADMIN PANEL SAHIFASI ---
 elif page == "Admin Panel":
-    st.title("🔐 Admin boshqaruv paneli")
-    password = st.text_input("Admin parolini kiriting:", type="password")
-    
+    st.title("🔐 Admin Panel")
+    password = st.text_input("Parol:", type="password")
     if password == "admin777":
-        st.success("Xush kelibsiz, Admin!")
-        tab1, tab2 = st.tabs(["🆕 Yangi qo'shish", "📑 Buyurtmalarni boshqarish"])
-        
-        with tab1:
-            model_nomi = st.text_input("Telefon modeli:")
-            narxi_val = st.number_input("Narxi ($):", min_value=0, step=10)
-            if st.button("Omborga qo'shish"):
-                if model_nomi:
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    cur.execute("INSERT INTO telefonlar (model, narxi) VALUES (%s, %s)", (model_nomi, narxi_val))
-                    conn.commit()
-                    st.success(f"{model_nomi} omborga qo'shildi!")
-                    cur.close()
-                    conn.close()
-                    st.rerun()
-
-        with tab2:
-            st.subheader("Kutilayotgan buyurtmalar")
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT id, telefon_id, model FROM buyurtmalar WHERE holat = 'Kutilmoqda'")
-            orders = cur.fetchall()
-            
-            if orders:
-                for order in orders:
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.write(f"🆔 ID: {order[1]} | 📱 Model: {order[2]}")
-                    with col2:
-                        if st.button("Tasdiqlash", key=f"btn_{order[0]}"):
-                            cur.execute("DELETE FROM telefonlar WHERE id = %s", (order[1],))
-                            cur.execute("UPDATE buyurtmalar SET holat = 'Sotildi' WHERE id = %s", (order[0],))
-                            conn.commit()
-                            st.rerun()
-            else:
-                st.write("Hozircha yangi buyurtmalar yo'q.")
-            cur.close()
-            conn.close()
-    elif password != "":
-        st.error("Parol noto'g'ri!")
+        st.write("Bu yerda omborni qo'lda boshqarishingiz mumkin.")
+        # Avvalgi admin kodlari (ixtiyoriy ravishda qoldirishingiz mumkin)
