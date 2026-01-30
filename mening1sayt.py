@@ -2,137 +2,110 @@ import streamlit as st
 import psycopg2
 import pandas as pd
 import requests
+import base64
 
 # 1. SOZLAMALAR
 TG_TOKEN = "8442153084:AAEftF3_JykYzbWdymcrjArZ8ceP6c-qgfE"
 TG_CHAT_ID = "1685342390"
+IMGBB_API_KEY = "7db025f8ea7addb4a9e3d1910b54db49" # Shu yerga API kalitni qo'ying
 SAYT_LINKI = "https://telefonbaza-r4qykdsrfj6ds3hys6hzkx.streamlit.app"
+
+# --- RASMNI INTERNETGA YUKLASH FUNKSIYASI ---
+def upload_image(image_file):
+    url = "https://api.imgbb.com/1/upload"
+    payload = {
+        "key": IMGBB_API_KEY,
+        "image": base64.b64encode(image_file.read()).decode('utf-8'),
+    }
+    res = requests.post(url, payload)
+    if res.status_code == 200:
+        return res.json()['data']['url'] # Rasmni internetdagi linkini qaytaradi
+    return None
 
 # --- BAZA BILAN ALOQA ---
 def get_connection():
     return psycopg2.connect('postgresql://neondb_owner:npg_FSj8WaqM7udA@ep-plain-block-ahq7shct-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require')
 
-# --- TELEGRAMGA XABAR YUBORISH ---
-def send_telegram_msg(text, order_id=None, is_menu=False):
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    reply_markup = {}
+# --- TELEGRAMGA RASMLI XABAR YUBORISH ---
+def send_tg_review(model, narx, photo_url, temp_id):
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
+    approve_url = f"{SAYT_LINKI}/?task=approve_tel&id={temp_id}"
     
-    if order_id:
-        confirm_url = f"{SAYT_LINKI}/?task=confirm&order_id={order_id}"
-        reply_markup["inline_keyboard"] = [[{"text": "✅ Tasdiqlash", "url": confirm_url}]]
+    keyboard = {"inline_keyboard": [[{"text": "✅ Tasdiqlash", "url": approve_url}]]}
+    caption = f"🆕 *YANGI E'LON*\n\n📱 Model: {model}\n💰 Narxi: {narx}$\n\nTasdiqlash tugmasini bossangiz saytga chiqadi."
     
-    if is_menu:
-        reply_markup["keyboard"] = [[{"text": "📦 Omborni ko'rish"}]],
-        reply_markup["resize_keyboard"] = True
-        reply_markup["one_time_keyboard"] = False
-
     payload = {
         "chat_id": TG_CHAT_ID,
-        "text": text,
+        "photo": photo_url,
+        "caption": caption,
         "parse_mode": "Markdown",
-        "reply_markup": reply_markup if reply_markup else None
+        "reply_markup": keyboard
     }
-    try: requests.post(url, json=payload)
-    except: pass
+    requests.post(url, json=payload)
 
-# --- DIZAYN (CSS) ---
-st.set_page_config(page_title="Phone Store", page_icon="📱", layout="centered")
-st.markdown("""
-    <style>
-    .stApp { background-color: #f4f7f6; }
-    .main-title { color: #2e4053; text-align: center; font-weight: bold; font-size: 35px; margin-bottom: 20px; }
-    div.stButton > button:first-child {
-        background-color: #00b894; color: white; border-radius: 10px; font-weight: bold; border: none; transition: 0.3s;
-    }
-    div.stButton > button:first-child:hover { background-color: #009473; transform: scale(1.02); }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- AVTOMATIK TASDIQLASH (Link orqali) ---
-query_params = st.query_params
-if "task" in query_params and query_params["task"] == "confirm":
-    o_id = query_params.get("order_id")
+# --- AVTOMATIK TASDIQLASH ---
+q_params = st.query_params
+if "task" in q_params:
+    task = q_params["task"]
+    t_id = q_params.get("id")
     try:
         conn = get_connection(); cur = conn.cursor()
-        cur.execute("SELECT telefon_id FROM buyurtmalar WHERE id = %s", (o_id,))
-        order_data = cur.fetchone()
-        if order_data:
-            cur.execute("DELETE FROM telefonlar WHERE id = %s", (order_data[0],))
-            cur.execute("UPDATE buyurtmalar SET holat = 'Sotildi' WHERE id = %s", (o_id,))
-            conn.commit()
-            st.balloons()
-            st.success("✅ Buyurtma tasdiqlandi va ombordan o'chirildi!")
+        if task == "approve_tel":
+            cur.execute("SELECT model, narxi, rasm_url FROM kutilayotganlar WHERE id = %s", (t_id,))
+            data = cur.fetchone()
+            if data:
+                cur.execute("INSERT INTO telefonlar (model, narxi, rasm_url) VALUES (%s, %s, %s)", data)
+                cur.execute("DELETE FROM kutilayotganlar WHERE id = %s", (t_id,))
+                conn.commit(); st.balloons(); st.success("Tasdiqlandi!")
         cur.close(); conn.close()
     except Exception as e: st.error(f"Xato: {e}")
 
-# --- NAVIGATSIYA ---
-st.sidebar.markdown("## 🧭 Menyu")
-page = st.sidebar.radio("", ["🛒 Do'kon sahifasi", "🛠 Admin Panel"])
+# --- INTERFEYS ---
+st.set_page_config(page_title="E-Market Pro", page_icon="📱", layout="wide")
+menu = st.sidebar.radio("Bo'limlar:", ["🛍 Katalog", "📤 Telefon sotish", "🛠 Admin"])
 
-# --- FOYDALANUVCHI SAHIFASI ---
-if page == "🛒 Do'kon sahifasi":
-    st.markdown("<h1 class='main-title'>📱 Smartfonlar Markazi</h1>", unsafe_allow_html=True)
-    try:
-        conn = get_connection(); cur = conn.cursor()
-        cur.execute("SELECT id, model, narxi FROM telefonlar ORDER BY id DESC")
-        res = cur.fetchall()
+# 1. KATALOG
+if menu == "🛍 Katalog":
+    st.markdown("<h1 style='text-align:center;'>📱 Sotuvdagi Telefonlar</h1>", unsafe_allow_html=True)
+    conn = get_connection(); cur = conn.cursor()
+    cur.execute("SELECT id, model, narxi, rasm_url FROM telefonlar ORDER BY id DESC")
+    items = cur.fetchall()
+    if items:
+        cols = st.columns(4)
+        for i, (id, model, narx, rasm) in enumerate(items):
+            with cols[i % 4]:
+                st.image(rasm, use_container_width=True)
+                st.markdown(f"**{model}**")
+                st.write(f"💰 {narx}$")
+                st.button("Sotib olish", key=f"buy_{id}")
+    else: st.info("Hozircha ombor bo'sh.")
+    cur.close(); conn.close()
+
+# 2. TELEFON SOTISH (Foydalanuvchi fayl yuklaydi)
+elif menu == "📤 Telefon sotish":
+    st.title("📞 Telefoningizni soting")
+    with st.form("upload_form"):
+        model = st.text_input("Model nomi:")
+        narx = st.number_input("Narxi ($):", min_value=1)
+        file = st.file_uploader("Telefon rasmini yuklang", type=['jpg', 'png', 'jpeg'])
         
-        if res:
-            st.subheader("Mavjud telefonlar")
-            df = pd.DataFrame(res, columns=["ID", "Model nomi", "Narxi ($)"])
-            st.dataframe(df, hide_index=True, use_container_width=True)
-            
-            st.write("---")
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                t_id = st.number_input("Sotib olish uchun ID kiriting:", min_value=1, step=1)
-            with col2:
-                st.write("##")
-                if st.button("🛍 Sotib olish"):
-                    cur.execute("SELECT model, narxi FROM telefonlar WHERE id = %s", (t_id,))
-                    t_data = cur.fetchone()
-                    if t_data:
-                        cur.execute("INSERT INTO buyurtmalar (telefon_id, model) VALUES (%s, %s) RETURNING id", (t_id, t_data[0]))
-                        new_id = cur.fetchone()[0]; conn.commit()
-                        send_telegram_msg(f"🔔 *YANGI BUYURTMA*\n\n📱 Model: {t_data[0]}\n💰 Narxi: {t_data[1]}$", new_id)
-                        st.toast(f"So'rov yuborildi!", icon='🚀')
-                    else: st.error("ID topilmadi!")
-        else: st.info("Hozircha ombor bo'sh.")
-        cur.close(); conn.close()
-    except Exception as e: st.error(f"Xato: {e}")
+        if st.form_submit_button("Tekshirishga yuborish"):
+            if model and file:
+                with st.spinner("Rasm yuklanmoqda..."):
+                    img_url = upload_image(file) # Rasmni internetga yuklaymiz
+                    if img_url:
+                        conn = get_connection(); cur = conn.cursor()
+                        cur.execute("INSERT INTO kutilayotganlar (model, narxi, rasm_url) VALUES (%s, %s, %s) RETURNING id", (model, narx, img_url))
+                        temp_id = cur.fetchone()[0]; conn.commit()
+                        send_tg_review(model, narx, img_url, temp_id)
+                        st.success("✅ Rasm yuklandi va Adminga yuborildi!")
+                        cur.close(); conn.close()
+                    else: st.error("Rasmni yuklashda xato bo'ldi.")
+            else: st.warning("Ma'lumotlarni to'ldiring!")
 
-# --- ADMIN PANEL ---
-elif page == "🛠 Admin Panel":
-    st.markdown("<h1 class='main-title'>🔐 Admin Boshqaruvi</h1>", unsafe_allow_html=True)
-    pwd = st.text_input("Parolni kiriting:", type="password")
-    
+# 3. ADMIN
+elif menu == "🛠 Admin":
+    pwd = st.sidebar.text_input("Parol:", type="password")
     if pwd == "admin777":
-        st.success("Xush kelibsiz!")
-        
-        # Bot tugmasi
-        if st.button("🚀 Botda 'Ombor' tugmasini chiqarish"):
-            send_telegram_msg("Bot klaviaturasi yangilandi! Pastdagi tugmani bosing 👇", is_menu=True)
-            st.toast("Botga xabar ketdi!")
-
-        tab1, tab2 = st.tabs(["➕ Yangi telefon", "📦 Buyurtmalar"])
-        
-        with tab1:
-            m_nomi = st.text_input("Telefon modeli:")
-            m_narxi = st.number_input("Narxi ($):", min_value=0, step=10)
-            if st.button("💾 Omborda saqlash"):
-                if m_nomi:
-                    c = get_connection(); k = c.cursor()
-                    k.execute("INSERT INTO telefonlar (model, narxi) VALUES (%s, %s)", (m_nomi, m_narxi))
-                    c.commit(); st.success(f"{m_nomi} qo'shildi!"); k.close(); c.close()
-                else: st.warning("Model nomini yozing!")
-
-        with tab2:
-            st.subheader("Kutilayotgan buyurtmalar")
-            c = get_connection(); k = c.cursor()
-            k.execute("SELECT id, model, holat FROM buyurtmalar WHERE holat='Kutilmoqda'")
-            orders = k.fetchall()
-            if orders:
-                for o in orders:
-                    st.write(f"🆔 Buyurtma ID: {o[0]} | 📱 Model: {o[1]}")
-            else: st.write("Yangi buyurtmalar yo'q.")
-            k.close(); c.close()
+        st.title("🛠 Admin paneli")
+        st.write("Bu yerda statistika ko'rinadi.")
