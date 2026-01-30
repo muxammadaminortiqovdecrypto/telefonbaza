@@ -2,13 +2,7 @@ import streamlit as st
 import psycopg2
 
 def get_connection():
-    return psycopg2.connect(
-        host="127.0.0.1",
-        database="postgres",
-        user="postgres",
-        password="12345", 
-        port="5432"
-    )
+    return psycopg2.connect(psql 'postgresql://neondb_owner:npg_FSj8WaqM7udA@ep-plain-block-ahq7shct-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require' )
 
 # Ma'lumotni bazaga yuborish va inputlarni tozalash funksiyasi
 def saqlash_va_tozalash():
@@ -40,3 +34,4 @@ st.text_input("Smartfon modeli:", key="model_input")
 st.number_input("Narxi ($):", min_value=0, key="narx_input")
 
 st.button("Baza (pgAdmin4) ga yuborish", on_click=saqlash_va_tozalash)
+
